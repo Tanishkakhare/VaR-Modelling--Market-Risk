@@ -1,0 +1,158 @@
+'This query is to analyse acutal stock prices from different sectors and make create a portfolio among them to calculate stress testing and VaR';
+
+create database var_model;
+use var_model;
+
+'Below are the stocks used for this project';
+
+create table ONGC ( trade_date date, open_price numeric, high_price numeric, low_price numeric, close_price numeric, volume bigint);
+create table TCS ( trade_date date , open_price numeric, high_price numeric, low_price numeric, close_price numeric, volume bigint);
+create table HDFC ( trade_date date , open_price numeric, high_price numeric, low_price numeric, close_price numeric, volume bigint);
+create table MARUTI (trade_date date , open_price numeric, high_price numeric, low_price numeric, close_price numeric, volume bigint);
+create table BRITANNIA (trade_date date , open_price numeric, high_price numeric, low_price numeric, close_price numeric, volume bigint);
+
+'combining them in one table';
+
+CREATE TABLE stock_prices (symbol VARCHAR(20),trade_date DATE,open_price DECIMAL(12,2),high_price DECIMAL(12,2),low_price DECIMAL(12,2),close_price DECIMAL(12,2), volume BIGINT);
+INSERT INTO stock_prices
+SELECT
+    'ONGC' AS symbol,trade_date,open_price,high_price,low_price,close_price,volume FROM ONGC;
+INSERT INTO stock_prices
+SELECT
+    'TCS' AS symbol, trade_date,open_price,high_price,low_price,close_price, volume FROM TCS;
+INSERT INTO stock_prices
+SELECT
+    'HDFC' AS symbol,trade_date,open_price,high_price,low_price,close_price, volume FROM HDFC;
+    INSERT INTO stock_prices
+SELECT
+    'MARUTI' AS symbol,trade_date, open_price, high_price, low_price, close_price, volume FROM MARUTI;
+    INSERT INTO stock_prices
+SELECT
+    'BRITANNIA' AS symbol,trade_date, open_price, high_price, low_price, close_price, volume FROM BRITANNIA;
+
+'Creating portfolio using different weights for each sectors';
+
+CREATE TABLE portfolio ( symbol VARCHAR(20), quantity INT, sector varchar(20));
+INSERT INTO portfolio VALUES ('ONGC',853,'Enerygy'), ('TCS', 350,'IT'), ('HDFC',250, ' Banking'),('MARUTI', 167, 'Automobile'), ('BRITANNIA', 222,'FMGC');
+
+' Calculating daily returns';
+
+CREATE TABLE daily_returns AS
+SELECT symbol,trade_date,(close_price -LAG(close_price) OVER(PARTITION BY symbol ORDER BY trade_date)) /LAG(close_price) OVER(PARTITION BY symbol ORDER BY trade_date)AS daily_return from stock_prices;
+
+'Calculating current portfolio value';
+
+CREATE VIEW latest_prices AS
+SELECT sp.*FROM stock_prices sp JOIN ( SELECT symbol, MAX(trade_date) AS latest_date
+    FROM stock_prices GROUP BY symbol) t ON sp.symbol = t.symbol AND sp.trade_date = t.latest_date;
+
+SELECT  p.symbol,  p.quantity,  lp.close_price,  p.quantity * lp.close_price AS market_value FROM portfolio p JOIN latest_prices lp ON p.symbol = lp.symbol;
+
+CREATE TABLE portfolio_value AS
+SELECT
+    SUM(p.quantity * lp.close_price) AS total_portfolio_value
+FROM portfolio p
+JOIN latest_prices lp
+    ON p.symbol = lp.symbol;
+    
+    select * from portfolio_value;
+
+create table portfolio_weight as SELECT
+    p.symbol,
+    p.quantity * lp.close_price AS market_value,
+    (
+        p.quantity * lp.close_price
+    ) /
+    (SELECT SUM( p2.quantity * lp2.close_price) FROM portfolio p2  JOIN latest_prices lp2 ON p2.symbol = lp2.symbol) AS portfolio_weight
+FROM portfolio p
+JOIN latest_prices lp
+ON p.symbol = lp.symbol;
+
+
+'Analysing most volatile stock among the portfolio';
+
+SELECT
+    symbol,
+    STDDEV(daily_return)
+    AS volatility
+FROM daily_returns
+GROUP BY symbol
+ORDER BY volatility DESC;
+
+' Evaluating best performaning stock among the portfolio: Average daily return';
+
+SELECT
+    symbol,
+    AVG(daily_return)
+    AS avg_return
+FROM daily_returns
+GROUP BY symbol
+ORDER BY avg_return DESC;
+
+'Evaluation portfolio returns';
+
+CREATE TABLE portfolio_return AS
+WITH Daily_Returns AS (
+    SELECT
+        symbol,
+        trade_date,
+        (close_price - LAG(close_price) OVER (
+            PARTITION BY symbol
+            ORDER BY trade_date
+        )) / LAG(close_price) OVER (
+            PARTITION BY symbol
+            ORDER BY trade_date
+        ) AS daily_return
+    FROM stock_prices
+)
+
+SELECT
+    dr.trade_date,
+    ROUND(SUM(dr.daily_return * pw.portfolio_weight), 6) AS portfolio_return
+FROM Daily_Returns dr
+JOIN portfolio_weight pw
+    ON dr.symbol = pw.symbol
+WHERE dr.daily_return IS NOT NULL
+GROUP BY dr.trade_date
+ORDER BY dr.trade_date;
+
+'Calculating potfolio volality';
+
+SELECT
+    STDDEV(portfolio_return)
+    AS portfolio_volatility
+FROM portfolio_return;
+
+'There are ~577 pobservations in the stock price table; hence calculating 5% worst portfolio return will be 577*5%';
+
+SELECT portfolio_return
+FROM portfolio_return
+ORDER BY portfolio_return
+LIMIT 29;
+
+CREATE TABLE stress_scenarios (
+scenario_name VARCHAR(50),
+shock_pct DECIMAL(5,2)
+);
+
+'Estimating various scenerios which can lead to major stress in portfolio';
+
+INSERT INTO stress_scenarios VALUES
+('COVID Crash',-20),
+('Banking Crisis',-15),
+('Rate Shock',-10),
+('Petrol price rise',-25);
+
+'calculating the impact of various scenarios';
+
+CREATE TABLE stress_values AS
+SELECT
+    scenario_name,
+    total_portfolio_value,
+    shock_pct,
+    total_portfolio_value * (1 + shock_pct / 100.0) AS stressed_value
+FROM portfolio_value
+CROSS JOIN stress_scenarios;
+
+select * from stress_values;
+
